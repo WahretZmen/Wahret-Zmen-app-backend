@@ -352,6 +352,7 @@ const sendOrderNotification = async (req, res) => {
       return res.status(404).json({ message: "Product not found in order" });
     }
 
+    // ✅ Build article index text if provided
     const articleText = articleIndex ? ` (Article #${articleIndex})` : "";
     const articleTextAr = articleIndex ? ` (المقالة رقم ${articleIndex})` : "";
 
@@ -375,7 +376,7 @@ const sendOrderNotification = async (req, res) => {
         <hr />
         <p dir="rtl"><strong>عزيزي ${customerName}</strong>،</p>
         <p dir="rtl">
-          طلبك <strong>${matchedProduct.productId.title}</strong> (اللون: <strong>${colorName}</strong>)${articleTextAr}،
+          طلبك <strong>${matchedProduct.productId.title}</strong> (اللون: <strong>${colorName}</strong>)${articleTextAr}، 
           برقم ${shortOrderId}، جاهز بنسبة <strong>${progress}%</strong>.
         </p>
         ${
@@ -413,6 +414,7 @@ const sendOrderNotification = async (req, res) => {
       .json({ message: "Error sending notification", error: error.message });
   }
 };
+
 
 module.exports = {
   createAOrder,
