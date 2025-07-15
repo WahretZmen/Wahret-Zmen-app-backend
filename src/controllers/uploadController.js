@@ -1,53 +1,36 @@
-const cloudinary = require("../utils/cloudinary");
 const multer = require("multer");
+const cloudinary = require("../utils/cloudinary");
 
-// ✅ Use memory storage (recommended for Vercel/serverless environments)
+// ✅ Use memoryStorage so file is in memory buffer (not disk)
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-/**
- * @desc Upload an image to Cloudinary via memory buffer
- * @route POST /api/upload
- * @access Public
- */
 const uploadImage = async (req, res) => {
   try {
-    // 🛑 Validate file presence
-    if (!req.file) {
+    if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: "No image file provided" });
     }
 
-    // 📤 Upload buffer stream to Cloudinary
-    const streamUpload = (buffer) => {
-      return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            resource_type: "image",
-            folder: "wahret-zmen", // Optional: change folder if needed
-          },
-          (error, result) => {
-            if (result) resolve(result);
-            else reject(error);
+    const buffer = req.file.buffer;
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: "wahret-zmen", resource_type: "image" },
+        (error, result) => {
+          if (result) {
+            resolve(result);
+          } else {
+            reject(error);
           }
-        );
-        stream.end(buffer);
-      });
-    };
-
-    const result = await streamUpload(req.file.buffer);
-
-    return res.status(200).json({
-      success: true,
-      message: "Image uploaded successfully",
-      image: result.secure_url,
+        }
+      );
+      stream.end(buffer);
     });
+
+    res.status(200).json({ image: result.secure_url });
   } catch (error) {
-    console.error("❌ Image upload failed:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Image upload failed",
-      error: error.message,
-    });
+    console.error("❌ Upload failed:", error);
+    res.status(500).json({ message: "Image upload failed", error: error.message });
   }
 };
 
