@@ -5,78 +5,80 @@ const translate = require("translate-google");
 const translateDetails = async (text, lang) => {
   try {
     return await translate(text, { to: lang });
-  } catch (error) {
-    console.error(`Translation error (${lang}):`, error);
+  } catch (e) {
+    console.error(`Translation error (${lang}):`, e);
     return text;
   }
 };
 
 
+// ---------- CREATE ----------
 const postAProduct = async (req, res) => {
   try {
-    let { title, description, category, newPrice, oldPrice, colors, trending } = req.body;
+    let { title, description, category, newPrice, oldPrice, colors, trending, coverImage } = req.body;
 
     if (!title || !description || !category || !newPrice || !oldPrice || !Array.isArray(colors) || colors.length === 0) {
       return res.status(400).json({ success: false, message: "Missing required fields." });
     }
 
-    const coverImage = colors[0]?.image || "";
+    // normalize colors -> ensure .images[]
+    const normalizedIncoming = colors.map((c) => {
+      const images = Array.isArray(c.images) && c.images.length
+        ? c.images
+        : (c.image ? [c.image] : []); // back-compat
+      return { colorName: c.colorName, images, stock: Number(c.stock) || 0 };
+    });
 
-    // Translate colors
+    // cover fallback: explicit coverImage or first color’s first image
+    const safeCover = coverImage || normalizedIncoming[0]?.images?.[0] || "";
+
+    // translate color names
     const translatedColors = await Promise.all(
-      colors.map(async (color) => ({
+      normalizedIncoming.map(async (color) => ({
         colorName: {
           en: color.colorName,
-          fr: await translateDetails(color.colorName, "fr") || color.colorName,
-          ar: await translateDetails(color.colorName, "ar") || color.colorName,
+          fr: await translateDetails(color.colorName, "fr"),
+          ar: await translateDetails(color.colorName, "ar"),
         },
-        image: color.image,
+        images: color.images,
         stock: color.stock,
       }))
     );
 
-    const stockQuantity = translatedColors[0]?.stock || 0;
-
-    // Translate title & description
+    // translations of title/description
     const translations = {
       fr: {
-        title: await translateDetails(title, "fr") || title,
-        description: await translateDetails(description, "fr") || description,
+        title: await translateDetails(title, "fr"),
+        description: await translateDetails(description, "fr"),
       },
       ar: {
-        title: await translateDetails(title, "ar") || title,
-        description: await translateDetails(description, "ar") || description,
+        title: await translateDetails(title, "ar"),
+        description: await translateDetails(description, "ar"),
       },
     };
 
-    const productData = {
+    // stock: sum of color stocks (or keep first if you prefer)
+    const stockQuantity = translatedColors.reduce((acc, c) => acc + (c.stock || 0), 0);
+
+    const product = await Product.create({
       title,
       description,
       translations,
       category,
-      coverImage,
+      coverImage: safeCover,
       colors: translatedColors,
       oldPrice,
       newPrice,
-      finalPrice: newPrice || oldPrice,
       stockQuantity,
       trending,
-    };
-
-    const newProduct = new Product(productData);
-    await newProduct.save();
-
-    res.status(201).json({
-      success: true,
-      message: "Product created successfully",
-      product: newProduct,
     });
+
+    res.status(201).json({ success: true, message: "Product created successfully", product });
   } catch (error) {
-    console.error("❌ Error creating product:", error.message, error.stack);
-    res.status(500).json({ success: false, message: 'Failed to create product' });
+    console.error("❌ Error creating product:", error);
+    res.status(500).json({ success: false, message: "Failed to create product" });
   }
 };
-
 
 
 
@@ -112,75 +114,118 @@ const getSingleProduct = async (req, res) => {
 
 
 // ✅ Update Product and translate after updating
+// ---------- UPDATE ----------
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    let { title, description, category, newPrice, oldPrice, colors, trending } = req.body;
+    let { title, description, category, newPrice, oldPrice, colors, trending, coverImage } = req.body;
 
     if (!Array.isArray(colors) || colors.length === 0) {
       return res.status(400).json({ success: false, message: "At least one color must be provided." });
     }
 
-    const coverImage = colors[0]?.image || "";
-    const stockQuantity = colors[0]?.stock || 0;
+    const normalizedIncoming = colors.map((c) => {
+      const images = Array.isArray(c.images) && c.images.length
+        ? c.images
+        : (c.image ? [c.image] : []); // back-compat
+      return { colorName: c.colorName, images, stock: Number(c.stock) || 0 };
+    });
 
-    const updatedProduct = await Product.findByIdAndUpdate(id, {
-      title,
-      description,
-      category,
-      coverImage,
-      colors: colors.map((color) => ({
-        colorName: { en: color.colorName },
-        image: color.image,
-        stock: Number(color.stock) || 0,
-      })),
-      oldPrice,
-      newPrice,
-      stockQuantity,
-      trending,
-    }, { new: true });
+    // build raw object first (EN names), then translate
+    const base = await Product.findByIdAndUpdate(
+      id,
+      {
+        title,
+        description,
+        category,
+        coverImage: coverImage || normalizedIncoming[0]?.images?.[0] || "",
+        colors: normalizedIncoming.map((c) => ({
+          colorName: { en: c.colorName }, // translate after
+          images: c.images,
+          stock: c.stock,
+        })),
+        oldPrice,
+        newPrice,
+        stockQuantity: normalizedIncoming.reduce((acc, c) => acc + (c.stock || 0), 0),
+        trending,
+      },
+      { new: true }
+    );
 
-    if (!updatedProduct) {
-      return res.status(404).json({ success: false, message: "Product not found!" });
-    }
+    if (!base) return res.status(404).json({ success: false, message: "Product not found!" });
 
-    const translations = {
+    // translate title/description
+    base.translations = {
       en: { title, description },
-      fr: {
-        title: await translateDetails(title, "fr"),
-        description: await translateDetails(description, "fr"),
-      },
-      ar: {
-        title: await translateDetails(title, "ar"),
-        description: await translateDetails(description, "ar"),
-      },
+      fr: { title: await translateDetails(title, "fr"), description: await translateDetails(description, "fr") },
+      ar: { title: await translateDetails(title, "ar"), description: await translateDetails(description, "ar") },
     };
 
-    const translatedColors = await Promise.all(
-      updatedProduct.colors.map(async (color) => ({
+    // translate color names
+    base.colors = await Promise.all(
+      base.colors.map(async (c) => ({
         colorName: {
-          en: color.colorName.en,
-          fr: await translateDetails(color.colorName.en, "fr"),
-          ar: await translateDetails(color.colorName.en, "ar"),
+          en: c.colorName.en,
+          fr: await translateDetails(c.colorName.en, "fr"),
+          ar: await translateDetails(c.colorName.en, "ar"),
         },
-        image: color.image,
-        stock: color.stock,
+        images: c.images,
+        stock: c.stock,
       }))
     );
 
-    updatedProduct.translations = translations;
-    updatedProduct.colors = translatedColors;
-    await updatedProduct.save();
+    await base.save();
 
-    res.status(200).json({
-      success: true,
-      message: "Product updated successfully",
-      product: updatedProduct,
-    });
+    res.status(200).json({ success: true, message: "Product updated successfully", product: base });
   } catch (error) {
     console.error("Error updating product:", error);
     res.status(500).json({ success: false, message: "Failed to update product" });
   }
+};
+
+module.exports = {
+  postAProduct,
+  getAllProducts: async (req, res) => {
+    try {
+      const products = await Product.find().sort({ createdAt: -1 });
+      res.status(200).json(products);
+    } catch (e) {
+      res.status(500).json({ success: false, message: "Failed to fetch products" });
+    }
+  },
+  getSingleProduct: async (req, res) => {
+    try {
+      const p = await Product.findById(req.params.id);
+      if (!p) return res.status(404).json({ success: false, message: "Product not found!" });
+      res.status(200).json(p);
+    } catch (e) {
+      res.status(500).json({ success: false, message: "Failed to fetch product" });
+    }
+  },
+  updateProduct,
+  deleteAProduct: async (req, res) => {
+    try {
+      const d = await Product.findByIdAndDelete(req.params.id);
+      if (!d) return res.status(404).json({ success: false, message: "Product not found!" });
+      res.status(200).json({ success: true, message: "Product deleted successfully", product: d });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "Failed to delete product" });
+    }
+  },
+  updateProductPriceByPercentage: async (req, res) => {
+    const { id } = req.params;
+    const { percentage } = req.body;
+    try {
+      const p = await Product.findById(id);
+      if (!p) return res.status(404).json({ success: false, message: "Product not found!" });
+      const discount = (p.oldPrice * percentage) / 100;
+      p.finalPrice = p.oldPrice - discount;
+      await p.save();
+      res.status(200).json({ success: true, message: "Price updated successfully", finalPrice: p.finalPrice });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "Failed to update product price" });
+    }
+  },
 };
 
 

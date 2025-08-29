@@ -1,3 +1,4 @@
+// src/api/orders/order.route.js
 const express = require("express");
 const {
   createAOrder,
@@ -7,21 +8,33 @@ const {
   updateOrder,
   deleteOrder,
   sendOrderNotification,
-  removeProductFromOrder, // ✅ make sure this is defined in controller
+  removeProductFromOrder,
 } = require("./order.controller");
-
 
 const router = express.Router();
 
-// 🟢 This must be BEFORE router.patch("/:id", ...)
-router.patch("/remove-product", removeProductFromOrder); // ✅ FIXED order
+/**
+ * Order matters:
+ * - Put explicit paths BEFORE the param route "/:id" for the same HTTP verb.
+ * - This prevents "/remove-product" from being captured as ":id".
+ */
 
+// Remove one product (or quantity) from an order
+router.patch("/remove-product", removeProductFromOrder);
+
+// Send a progress/ready notification email
+router.post("/notify", sendOrderNotification);
+
+// Collections
 router.get("/", getAllOrders);
+router.post("/", createAOrder);
+
+// By email (specific before :id)
 router.get("/email/:email", getOrderByEmail);
+
+// By id
 router.get("/:id", getOrderById);
 router.patch("/:id", updateOrder);
 router.delete("/:id", deleteOrder);
-router.post("/notify", sendOrderNotification);
-router.post("/", createAOrder);
 
 module.exports = router;

@@ -155,6 +155,7 @@ const updateOrder = async (req, res) => {
 };
 
 // ✅ Remove a Product from an Order
+// ✅ Remove a Product from an Order (hardened)
 const removeProductFromOrder = async (req, res) => {
   const { orderId, productKey, quantityToRemove } = req.body;
 
@@ -164,15 +165,23 @@ const removeProductFromOrder = async (req, res) => {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const [productId, colorName] = productKey.split("|");
+    const [productId, colorName] = String(productKey || "").split("|");
     let productFound = false;
     const updatedProducts = [];
 
-    for (const item of order.products) {
-      const matchesProductId = item.productId.toString() === productId;
-      const matchesColorName = typeof item.color?.colorName === "string"
-        ? item.color.colorName === colorName
-        : Object.values(item.color?.colorName || {}).includes(colorName);
+    for (const item of order.products || []) {
+      const matchesProductId = String(item?.productId) === String(productId);
+
+      // Handle string or object colorName; also tolerate missing color gracefully
+      const itemColorName = (() => {
+        const cn = item?.color?.colorName;
+        if (!cn) return null;
+        if (typeof cn === "string") return cn;
+        return cn.en || cn.fr || cn.ar || null;
+      })();
+
+      const matchesColorName =
+        itemColorName != null && itemColorName === colorName;
 
       if (!matchesProductId || !matchesColorName) {
         updatedProducts.push(item); // keep as is
@@ -181,43 +190,44 @@ const removeProductFromOrder = async (req, res) => {
 
       productFound = true;
 
-      if (item.quantity < quantityToRemove) {
-        return res.status(400).json({ message: "Cannot remove more than existing quantity" });
+      const qtyToRemove = Number(quantityToRemove || 0);
+      const currentQty = Number(item?.quantity || 0);
+
+      if (qtyToRemove <= 0 || qtyToRemove > currentQty) {
+        return res.status(400).json({ message: "Invalid quantity to remove" });
       }
 
-      const newQty = item.quantity - quantityToRemove;
+      const newQty = currentQty - qtyToRemove;
       if (newQty > 0) {
-        updatedProducts.push({ ...item.toObject(), quantity: newQty });
+        updatedProducts.push({ ...item.toObject?.() ?? item, quantity: newQty });
       }
 
-      // ✅ Update stock in Product DB
-      const product = await Product.findById(productId);
-      if (product) {
-        const colorIndex = product.colors.findIndex((color) =>
-          color &&
-          color.colorName &&
-          (
-            color.colorName.en === colorName ||
-            color.colorName.fr === colorName ||
-            color.colorName.ar === colorName
-          )
-        );
-
-        if (colorIndex !== -1) {
-          const qty = Number(quantityToRemove);
-
-          product.colors[colorIndex].stock = Math.max(
-            (product.colors[colorIndex].stock || 0) + qty,
-            0
+      // Update stock in Product DB, but don't crash if anything is missing
+      try {
+        const product = await Product.findById(productId);
+        if (product && Array.isArray(product.colors)) {
+          const idx = product.colors.findIndex((c) =>
+            (c?.colorName?.en === colorName) ||
+            (c?.colorName?.fr === colorName) ||
+            (c?.colorName?.ar === colorName)
           );
 
+          if (idx !== -1) {
+            product.colors[idx].stock = Math.max(
+              (product.colors[idx].stock || 0) + qtyToRemove,
+              0
+            );
+          }
+
           product.stockQuantity = product.colors.reduce(
-            (sum, color) => sum + (color.stock || 0),
+            (sum, c) => sum + (c?.stock || 0),
             0
           );
 
           await product.save();
         }
+      } catch (stockErr) {
+        console.error("removeProductFromOrder() – failed to update product stock", stockErr);
       }
     }
 
@@ -230,15 +240,17 @@ const removeProductFromOrder = async (req, res) => {
       return res.status(200).json({ message: "Order deleted because it has no more products" });
     }
 
-    // 🔄 Recalculate total order price
+    // Recalculate total order price
     const allProductDetails = await Product.find({
       _id: { $in: updatedProducts.map((p) => p.productId) },
     });
 
     const newTotal = updatedProducts.reduce((acc, item) => {
-      const prod = allProductDetails.find((p) => p._id.toString() === item.productId.toString());
-      const price = prod?.newPrice || 0;
-      return acc + price * item.quantity;
+      const prod = allProductDetails.find(
+        (p) => String(p._id) === String(item.productId)
+      );
+      const price = Number(prod?.newPrice || 0);
+      return acc + price * Number(item?.quantity || 0);
     }, 0);
 
     order.products = updatedProducts;
@@ -254,62 +266,72 @@ const removeProductFromOrder = async (req, res) => {
 
 
 
+
 // ✅ Delete an Order and restore stock
 
+// ✅ Delete an Order and restore stock (hardened)
 const deleteOrder = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🔄 Find the order first
-    const deletedOrder = await Order.findById(id);
-    if (!deletedOrder) {
+    // Find the order first
+    const order = await Order.findById(id);
+    if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // ✅ Loop through all products in the order to restore stock
-    for (const item of deletedOrder.products) {
-      const product = await Product.findById(item.productId);
-      if (product) {
-        const colorName =
-          typeof item.color.colorName === "object"
-            ? item.color.colorName.en
-            : item.color.colorName;
+    // Restore stock for each item, but never crash on malformed data
+    for (const item of order.products || []) {
+      try {
+        if (!item?.productId) continue;
 
-        const colorIndex = product.colors.findIndex(
-          (color) =>
-            color.colorName.en === colorName ||
-            color.colorName.fr === colorName ||
-            color.colorName.ar === colorName
+        const product = await Product.findById(item.productId);
+        if (!product) continue;
+
+        // Safely resolve the color name as a plain string
+        const colorNameStr = (() => {
+          const cn = item?.color?.colorName;
+          if (!cn) return null;
+          if (typeof cn === "string") return cn;
+          return cn.en || cn.fr || cn.ar || null;
+        })();
+
+        if (colorNameStr && Array.isArray(product.colors)) {
+          const idx = product.colors.findIndex((c) =>
+            (c?.colorName?.en === colorNameStr) ||
+            (c?.colorName?.fr === colorNameStr) ||
+            (c?.colorName?.ar === colorNameStr)
+          );
+
+          if (idx !== -1) {
+            const qty = Number(item?.quantity || 0);
+            product.colors[idx].stock = Math.max((product.colors[idx].stock || 0) + qty, 0);
+          }
+        }
+
+        // Always recompute the product's total stock
+        product.stockQuantity = (product.colors || []).reduce(
+          (sum, c) => sum + (c?.stock || 0),
+          0
         );
 
-        if (colorIndex !== -1) {
-          // ✅ Restore stock to the color
-          product.colors[colorIndex].stock = Math.max(
-            (product.colors[colorIndex].stock || 0) + item.quantity,
-            0
-          );
-
-          // ✅ Recalculate total stock
-          product.stockQuantity = product.colors.reduce(
-            (sum, c) => sum + (c.stock || 0),
-            0
-          );
-
-          // ✅ Save updated product
-          await product.save();
-        }
+        await product.save();
+      } catch (innerErr) {
+        console.error("deleteOrder() – restore stock failed for item:", item, innerErr);
+        // Continue with the rest of the items instead of throwing
       }
     }
 
-    // ❌ Only now delete the order from DB
+    // Finally delete the order
     await Order.findByIdAndDelete(id);
 
-    res.status(200).json({ message: "Order deleted successfully" });
+    return res.status(200).json({ message: "Order deleted successfully" });
   } catch (error) {
     console.error("Error deleting order:", error);
-    res.status(500).json({ message: "Failed to delete order" });
+    return res.status(500).json({ message: error.message || "Failed to delete order" });
   }
 };
+
 
 
 
