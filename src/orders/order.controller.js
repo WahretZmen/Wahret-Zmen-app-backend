@@ -186,21 +186,24 @@ const createOrder = async (req, res) => {
   }
 };
 
+
 // GET /api/orders/email/:email
 const getOrderByEmail = async (req, res) => {
   try {
     const { email } = req.params;
+    
+    // Oldest first so #1 is the earliest order
     const orders = await Order.find({ email })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: 1 })
       .populate("products.productId", "title colors coverImage");
 
-    // Return 200 with [] so client doesn't treat it as an error
     return res.status(200).json(orders || []);
   } catch (error) {
     console.error("Error fetching orders:", error);
     res.status(500).json({ message: "Failed to fetch orders" });
   }
 };
+
 
 // GET /api/orders/:id
 const getOrderById = async (req, res) => {
