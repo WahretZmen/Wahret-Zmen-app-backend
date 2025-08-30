@@ -2,7 +2,7 @@ const Product = require("./product.model");
 // keep translate-google as a last-resort fallback (optional)
 const translateGoogle = require("translate-google");
 
-<<<<<<< HEAD
+
 const { translateXenova, arFix } = require("../translators/xenova.js");
 const { GLOSSARY_FR_AR, protectTerms } = require("../translators/glossary.js");
 
@@ -123,40 +123,47 @@ async function translateTitleSmartFRtoAR(frTitle) {
 }
 
 
-// Safe translator: prefer Xenova FR→AR with glossary; fall back to google; never throws
-=======
+
+
 // Safe translator: never throws, always returns a string
->>>>>>> 08e729daa773ba46491c8f248b54aac8c4db1946
-const translateDetails = async (text, lang) => {
+
+// Safe translator: prefer Xenova FR→AR with glossary; fall back to google; never throws
+const translateDetails = async (text, lang = "fr") => {
   const src = typeof text === "string" ? text : String(text ?? "");
+
+  // If admin writes in FR, we keep FR as-is
+  if (lang === "fr") return src;
+
   try {
-<<<<<<< HEAD
-    if (lang === "fr") return src;                 // admin enters FR; FR stays as-is
     if (lang === "ar") {
+      // Protect brand/terms before MT, then restore; apply small AR fixes
       const pt = protectTerms(src, GLOSSARY_FR_AR);
-      const out = await translateXenova(pt.text, "ar", "fr"); // FR -> AR (local, free)
+      const out = await translateXenova(pt.text, "ar", "fr"); // FR -> AR (local)
       return arFix(pt.restore(out));
     }
-    // If you ever need EN, you could do: translateXenova(src, 'en', 'fr') or just return src
+
+    // For other langs (e.g. "en"), we currently just return FR as-is;
+    // change this if you decide to support more target languages.
     return src;
-  } catch (e) {
-    // last-resort fallback to translate-google (optional)
+  } catch (err) {
+    // Xenova failed → last-resort fallback to Google MT (still with protections for AR)
     try {
+      if (lang === "ar") {
+        const pt = protectTerms(src, GLOSSARY_FR_AR);
+        const out = await translateGoogle(pt.text, { to: "ar" });
+        return arFix(pt.restore(out));
+      }
+
+      if (lang === "fr") return src; // already covered, but explicit
       const out = await translateGoogle(src, { to: lang });
-      return lang === "ar" ? arFix(out) : out || src;
-    } catch {
+      return out || src;
+    } catch (fallbackErr) {
+      // If even fallback fails, never throw: return the source text
       return src;
     }
-=======
-    const src = typeof text === "string" ? text : String(text ?? "");
-    const out = await translate(src, { to: lang });
-    return out || src;
-  } catch (e) {
-    console.error(`Translation error (${lang}):`, e?.message || e);
-    return String(text ?? "");
->>>>>>> 08e729daa773ba46491c8f248b54aac8c4db1946
   }
 };
+
 
 
 
