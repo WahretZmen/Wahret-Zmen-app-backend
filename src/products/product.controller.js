@@ -2,6 +2,7 @@ const Product = require("./product.model");
 // keep translate-google as a last-resort fallback (optional)
 const translateGoogle = require("translate-google");
 
+<<<<<<< HEAD
 const { translateXenova, arFix } = require("../translators/xenova.js");
 const { GLOSSARY_FR_AR, protectTerms } = require("../translators/glossary.js");
 
@@ -123,9 +124,13 @@ async function translateTitleSmartFRtoAR(frTitle) {
 
 
 // Safe translator: prefer Xenova FR→AR with glossary; fall back to google; never throws
+=======
+// Safe translator: never throws, always returns a string
+>>>>>>> 08e729daa773ba46491c8f248b54aac8c4db1946
 const translateDetails = async (text, lang) => {
   const src = typeof text === "string" ? text : String(text ?? "");
   try {
+<<<<<<< HEAD
     if (lang === "fr") return src;                 // admin enters FR; FR stays as-is
     if (lang === "ar") {
       const pt = protectTerms(src, GLOSSARY_FR_AR);
@@ -142,6 +147,14 @@ const translateDetails = async (text, lang) => {
     } catch {
       return src;
     }
+=======
+    const src = typeof text === "string" ? text : String(text ?? "");
+    const out = await translate(src, { to: lang });
+    return out || src;
+  } catch (e) {
+    console.error(`Translation error (${lang}):`, e?.message || e);
+    return String(text ?? "");
+>>>>>>> 08e729daa773ba46491c8f248b54aac8c4db1946
   }
 };
 
