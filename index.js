@@ -59,6 +59,11 @@ const connectDB = async () => {
 
 connectDB();
 
+// ✅ Simple health check route
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ status: "ok", message: "Wahret Zmen backend alive 🚀" });
+});
+
 // ✅ Root route
 app.get("/", (req, res) => {
   res.send("Wahret Zmen Boutique Server is running!");
