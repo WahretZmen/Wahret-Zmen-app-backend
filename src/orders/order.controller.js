@@ -1,75 +1,192 @@
-const Order = require("./order.model");
-const Product = require("../products/product.model.js");
-const nodemailer = require("nodemailer");
+// src/orders/orders.controller.js
+
 const mongoose = require("mongoose");
-const translate = require("translate-google");
+const nodemailer = require("nodemailer");
+const Order = require("./order.model");
+const Product = require("../products/product.model");
 
+// -------------------- Helpers --------------------
 
-// ✅ Create a New Order
-const createAOrder = async (req, res) => {
+/** Recompute total on an order document in-memory */
+function recomputeTotal(orderDoc) {
+  const total = (orderDoc.products || []).reduce((sum, line) => {
+    const unit = Number(line.price ?? 0);
+    const qty = Number(line.quantity ?? 0);
+    return sum + unit * qty;
+  }, 0);
+  orderDoc.totalPrice = Number(total.toFixed(2));
+}
+
+/** Find a line index by product and (optionally) color identity (currently unused) */
+function findLineIndex(orderDoc, { productId, colorId, colorName, colorImage }) {
+  if (!orderDoc?.products?.length) return -1;
+
+  return orderDoc.products.findIndex((line) => {
+    const sameProduct =
+      line?.productId && productId && String(line.productId) === String(productId);
+    if (!sameProduct) return false;
+
+    if (colorId && line?.color?._id) {
+      return String(line.color._id) === String(colorId);
+    }
+    if (colorName && line?.color?.colorName) {
+      const cn = line.color.colorName;
+      const asString = cn?.en || cn?.fr || cn?.ar || cn;
+      if (typeof asString === "string") {
+        return asString.toLowerCase() === String(colorName).toLowerCase();
+      }
+      return (
+        String(cn.en || "").toLowerCase() === String(colorName).toLowerCase() ||
+        String(cn.fr || "").toLowerCase() === String(colorName).toLowerCase() ||
+        String(cn.ar || "").toLowerCase() === String(colorName).toLowerCase()
+      );
+    }
+    if (colorImage && line?.color?.image) {
+      return String(line.color.image) === String(colorImage);
+    }
+    return true;
+  });
+}
+
+// -------------------- Controllers --------------------
+
+/**
+ * POST /api/orders
+ * Create Order (recomputes total server-side and decrements per-color stock best-effort)
+ */
+const createOrder = async (req, res) => {
   try {
-    const products = await Promise.all(
-      req.body.products.map(async (product) => {
-        const productData = await Product.findById(product.productId);
-        if (!productData) throw new Error(`Product not found: ${product.productId}`);
+    const body = req.body || {};
+    const {
+      name,
+      email,
+      phone,
+      address,
+      city,
+      country,
+      state,
+      zipcode,
+      notes,
+      products = [],
+    } = body;
 
-        const selectedColor = product?.color?.colorName && typeof product.color.colorName === "object"
-          ? product.color
-          : {
-              colorName: {
-                en: product.color?.colorName?.en || product.color?.colorName || "Original",
-                fr: product.color?.colorName?.fr || product.color?.colorName || "Original",
-                ar: product.color?.colorName?.ar || "أصلي",
-              },
-              image: product.color?.image || product.coverImage || productData.coverImage,
-            };
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ success: false, message: "No products in order." });
+    }
 
-        return {
-          productId: product.productId,
-          quantity: product.quantity,
-          color: selectedColor,
-        };
-      })
+    // Normalize and validate each line
+    const normalizedLines = [];
+    for (const raw of products) {
+      const productId = raw.productId?._id || raw.productId;
+      const quantity = Number(raw.quantity || 0);
+
+      if (!mongoose.isValidObjectId(productId)) {
+        return res.status(400).json({ success: false, message: "Invalid productId." });
+      }
+      if (!(quantity > 0)) {
+        return res.status(400).json({ success: false, message: "Quantity must be > 0." });
+      }
+
+      // Determine unit price: prefer client-sent price; if absent, read from Product.newPrice
+      let unitPrice = Number(raw.price);
+      if (!(unitPrice > 0)) {
+        const p = await Product.findById(productId).select("newPrice");
+        if (!p) {
+          return res.status(400).json({ success: false, message: "Product not found." });
+        }
+        unitPrice = Number(p.newPrice || 0);
+      }
+
+      // Normalize color info (optional)
+      const color =
+        raw.color
+          ? {
+              _id: raw.color._id || raw.color.colorId || undefined,
+              colorName: raw.color.colorName || undefined, // can be multilingual or string
+              image: raw.color.image || undefined,
+            }
+          : raw.colorId || raw.colorImage || raw.colorName
+          ? {
+              _id: raw.colorId,
+              colorName: raw.colorName,
+              image: raw.colorImage,
+            }
+          : undefined;
+
+      normalizedLines.push({
+        productId,
+        quantity,
+        price: Number(unitPrice.toFixed(2)),
+        ...(color ? { color } : {}),
+      });
+    }
+
+    // Recompute total server-side
+    const totalPrice = normalizedLines.reduce(
+      (sum, l) => sum + Number(l.price || 0) * Number(l.quantity || 0),
+      0
     );
 
-    const newOrder = new Order({ ...req.body, products });
-    const savedOrder = await newOrder.save();
+    // Create order
+    const order = await Order.create({
+      name,
+      email,
+      phone,
+      address,
+      city,
+      country,
+      state,
+      zipcode,
+      notes,
+      products: normalizedLines,
+      totalPrice: Number(totalPrice.toFixed(2)),
+      status: "pending",
+    });
 
-    for (const orderedProduct of products) {
-      const product = await Product.findById(orderedProduct.productId);
-      if (!product) continue;
+    // OPTIONAL: decrement stock per color (best-effort; doesn't fail the order)
+    for (const line of normalizedLines) {
+      try {
+        const prod = await Product.findById(line.productId).select("colors stockQuantity");
+        if (!prod) continue;
 
-      const colorIndex = product.colors.findIndex((color) =>
-        color && color.colorName && (
-          color.colorName.en === orderedProduct.color.colorName.en ||
-          color.colorName.fr === orderedProduct.color.colorName.fr ||
-          color.colorName.ar === orderedProduct.color.colorName.ar
-        )
-      );
+        let idx = -1;
+        if (line.color) {
+          idx = prod.colors.findIndex((c) => {
+            if (line.color._id && c._id) return String(c._id) === String(line.color._id);
+            if (line.color.image && c.image) return String(c.image) === String(line.color.image);
+            if (line.color.colorName && c.colorName) {
+              const want =
+                (line.color.colorName.en ||
+                  line.color.colorName.fr ||
+                  line.color.colorName.ar ||
+                  line.color.colorName) + "";
+              const have = (c.colorName?.en || c.colorName?.fr || c.colorName?.ar || c.colorName) + "";
+              return want.toLowerCase() === have.toLowerCase();
+            }
+            return false;
+          });
+        }
 
-      if (colorIndex !== -1) {
-        product.colors[colorIndex].stock = Math.max(
-          (product.colors[colorIndex].stock || 0) - orderedProduct.quantity,
-          0
-        );
-
-        product.stockQuantity = product.colors.reduce(
-          (sum, color) => sum + (color.stock || 0),
-          0
-        );
-
-        await product.save();
+        if (idx > -1) {
+          const current = Number(prod.colors[idx].stock || 0);
+          prod.colors[idx].stock = Math.max(0, current - Number(line.quantity || 0));
+          // Recompute global stock as the sum of per-color stock
+          prod.stockQuantity = prod.colors.reduce((s, c) => s + Number(c.stock || 0), 0);
+          await prod.save();
+        }
+      } catch (e) {
+        console.error("Stock decrement failed:", e);
       }
     }
 
-    res.status(200).json(savedOrder);
-  } catch (error) {
-    res.status(500).json({ message: error.message || "Failed to create order" });
+    return res.status(201).json({ success: true, order });
+  } catch (err) {
+    console.error("createOrder error:", err);
+    return res.status(500).json({ success: false, message: "Failed to create order" });
   }
 };
 
-
-// ✅ Get Orders by Customer Email
+// GET /api/orders/email/:email
 const getOrderByEmail = async (req, res) => {
   try {
     const { email } = req.params;
@@ -77,21 +194,22 @@ const getOrderByEmail = async (req, res) => {
       .sort({ createdAt: -1 })
       .populate("products.productId", "title colors coverImage");
 
-    if (!orders || orders.length === 0) {
-      return res.status(404).json({ message: "No orders found" });
-    }
-    res.status(200).json(orders);
+    // Return 200 with [] so client doesn't treat it as an error
+    return res.status(200).json(orders || []);
   } catch (error) {
     console.error("Error fetching orders:", error);
     res.status(500).json({ message: "Failed to fetch orders" });
   }
 };
 
-// ✅ Get a single order by ID
+// GET /api/orders/:id
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
-    const order = await Order.findById(id).populate("products.productId", "title colors coverImage");
+    const order = await Order.findById(id).populate(
+      "products.productId",
+      "title colors coverImage"
+    );
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -104,17 +222,16 @@ const getOrderById = async (req, res) => {
   }
 };
 
-
-// ✅ Get All Orders (Admin)
+// GET /api/orders (admin)
 const getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
       .populate("products.productId", "title colors coverImage")
       .lean();
 
-    const processedOrders = orders.map(order => ({
+    const processedOrders = orders.map((order) => ({
       ...order,
-      products: order.products.map(product => ({
+      products: order.products.map((product) => ({
         ...product,
         coverImage: product.productId?.coverImage || "/assets/default-image.png",
       })),
@@ -127,7 +244,7 @@ const getAllOrders = async (req, res) => {
   }
 };
 
-// ✅ Update an Order
+// PUT /api/orders/:id
 const updateOrder = async (req, res) => {
   const { id } = req.params;
   const { isPaid, isDelivered, productProgress } = req.body;
@@ -154,8 +271,7 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// ✅ Remove a Product from an Order
-// ✅ Remove a Product from an Order (hardened)
+// POST /api/orders/remove-line
 const removeProductFromOrder = async (req, res) => {
   const { orderId, productKey, quantityToRemove } = req.body;
 
@@ -207,9 +323,9 @@ const removeProductFromOrder = async (req, res) => {
         const product = await Product.findById(productId);
         if (product && Array.isArray(product.colors)) {
           const idx = product.colors.findIndex((c) =>
-            (c?.colorName?.en === colorName) ||
-            (c?.colorName?.fr === colorName) ||
-            (c?.colorName?.ar === colorName)
+            c?.colorName?.en === colorName ||
+            c?.colorName?.fr === colorName ||
+            c?.colorName?.ar === colorName
           );
 
           if (idx !== -1) {
@@ -240,21 +356,19 @@ const removeProductFromOrder = async (req, res) => {
       return res.status(200).json({ message: "Order deleted because it has no more products" });
     }
 
-    // Recalculate total order price
+    // Recalculate total order price using current Product.newPrice
     const allProductDetails = await Product.find({
       _id: { $in: updatedProducts.map((p) => p.productId) },
     });
 
     const newTotal = updatedProducts.reduce((acc, item) => {
-      const prod = allProductDetails.find(
-        (p) => String(p._id) === String(item.productId)
-      );
+      const prod = allProductDetails.find((p) => String(p._id) === String(item.productId));
       const price = Number(prod?.newPrice || 0);
       return acc + price * Number(item?.quantity || 0);
     }, 0);
 
     order.products = updatedProducts;
-    order.totalPrice = newTotal;
+    order.totalPrice = Number(newTotal.toFixed(2));
     await order.save();
 
     res.status(200).json({ message: "Product updated successfully" });
@@ -264,17 +378,11 @@ const removeProductFromOrder = async (req, res) => {
   }
 };
 
-
-
-
-// ✅ Delete an Order and restore stock
-
-// ✅ Delete an Order and restore stock (hardened)
+// DELETE /api/orders/:id
 const deleteOrder = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Find the order first
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -288,7 +396,6 @@ const deleteOrder = async (req, res) => {
         const product = await Product.findById(item.productId);
         if (!product) continue;
 
-        // Safely resolve the color name as a plain string
         const colorNameStr = (() => {
           const cn = item?.color?.colorName;
           if (!cn) return null;
@@ -298,9 +405,9 @@ const deleteOrder = async (req, res) => {
 
         if (colorNameStr && Array.isArray(product.colors)) {
           const idx = product.colors.findIndex((c) =>
-            (c?.colorName?.en === colorNameStr) ||
-            (c?.colorName?.fr === colorNameStr) ||
-            (c?.colorName?.ar === colorNameStr)
+            c?.colorName?.en === colorNameStr ||
+            c?.colorName?.fr === colorNameStr ||
+            c?.colorName?.ar === colorNameStr
           );
 
           if (idx !== -1) {
@@ -309,7 +416,6 @@ const deleteOrder = async (req, res) => {
           }
         }
 
-        // Always recompute the product's total stock
         product.stockQuantity = (product.colors || []).reduce(
           (sum, c) => sum + (c?.stock || 0),
           0
@@ -318,11 +424,9 @@ const deleteOrder = async (req, res) => {
         await product.save();
       } catch (innerErr) {
         console.error("deleteOrder() – restore stock failed for item:", item, innerErr);
-        // Continue with the rest of the items instead of throwing
       }
     }
 
-    // Finally delete the order
     await Order.findByIdAndDelete(id);
 
     return res.status(200).json({ message: "Order deleted successfully" });
@@ -332,15 +436,10 @@ const deleteOrder = async (req, res) => {
   }
 };
 
-
-
-
-// ✅ Send Order Notification via Email
+// POST /api/orders/notify
 const sendOrderNotification = async (req, res) => {
   try {
     const { orderId, email, productKey, progress, articleIndex } = req.body;
-
-    console.log("📩 Incoming Notification Request:", req.body);
 
     if (!email || !productKey || progress === undefined) {
       return res
@@ -374,7 +473,6 @@ const sendOrderNotification = async (req, res) => {
       return res.status(404).json({ message: "Product not found in order" });
     }
 
-    // ✅ Build article index text if provided
     const articleText = articleIndex ? ` (Article #${articleIndex})` : "";
     const articleTextAr = articleIndex ? ` (المقالة رقم ${articleIndex})` : "";
 
@@ -383,6 +481,7 @@ const sendOrderNotification = async (req, res) => {
         ? `Commande ${shortOrderId}${articleText} – Votre création est prête !`
         : `Commande ${shortOrderId}${articleText} – Suivi de la confection artisanale (${progress}%)`;
 
+    // ✅ FIX: Close the template string with a backtick, not a stray quote
     const htmlMessage = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6;">
         <p><strong>Cher ${customerName}</strong>,</p>
@@ -426,20 +525,17 @@ const sendOrderNotification = async (req, res) => {
 
     await transporter.sendMail(mailOptions);
 
-    res
-      .status(200)
-      .json({ message: "Notification sent successfully in French and Arabic." });
+    res.status(200).json({ message: "Notification sent successfully in French and Arabic." });
   } catch (error) {
     console.error("Error sending notification:", error);
-    res
-      .status(500)
-      .json({ message: "Error sending notification", error: error.message });
+    res.status(500).json({ message: "Error sending notification", error: error.message });
   }
 };
 
+// -------------------- Exports --------------------
 
 module.exports = {
-  createAOrder,
+  createOrder,
   getAllOrders,
   getOrderByEmail,
   getOrderById,
@@ -448,8 +544,3 @@ module.exports = {
   sendOrderNotification,
   removeProductFromOrder,
 };
-
-
-
-
-
