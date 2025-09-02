@@ -13,19 +13,21 @@ const OrderSchema = new mongoose.Schema(
       zipcode: { type: String, required: true },
     },
     products: [
-      {
-        productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
-        quantity: { type: Number, required: true },
-        color: {
-          colorName: {
-            en: { type: String, required: true },
-            fr: { type: String, required: true },
-            ar: { type: String, required: true },
-          },
-          image: { type: String, required: true },
-        },
+  {
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+    quantity: { type: Number, required: true },
+    price: { type: Number, required: true }, // ← add this
+    color: {
+      colorName: {
+        en: { type: String, required: true },
+        fr: { type: String, required: true },
+        ar: { type: String, required: true },
       },
-    ],
+      image: { type: String, required: true },
+    },
+  },
+],
+
     totalPrice: { type: Number, required: true },
     isPaid: { type: Boolean, default: false },
     isDelivered: { type: Boolean, default: false },

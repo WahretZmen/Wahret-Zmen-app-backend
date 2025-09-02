@@ -50,35 +50,42 @@ function findLineIndex(orderDoc, { productId, colorId, colorName, colorImage }) 
 
 // -------------------- Controllers --------------------
 
-/**
- * POST /api/orders
- * Create Order (recomputes total server-side and decrements per-color stock best-effort)
- */
+// POST /api/orders
 const createOrder = async (req, res) => {
   try {
     const body = req.body || {};
-    const {
-      name,
-      email,
-      phone,
-      address,
-      city,
-      country,
-      state,
-      zipcode,
-      notes,
-      products = [],
-    } = body;
 
-    if (!Array.isArray(products) || products.length === 0) {
+    // ---- Basic fields ----
+    const name = body.name?.trim();
+    const email = body.email?.trim();
+    const phone = body.phone?.trim();
+
+    // Accept address either nested or flattened and normalize
+    const addressObj = {
+      street: body.address?.street || body.street,
+      city:   body.address?.city   || body.city,
+      state:  body.address?.state  || body.state,
+      country:body.address?.country|| body.country,
+      zipcode:body.address?.zipcode|| body.zipcode,
+    };
+
+    if (!name || !email || !phone) {
+      return res.status(400).json({ success: false, message: "Missing name, email, or phone." });
+    }
+    if (!addressObj.street || !addressObj.city || !addressObj.state || !addressObj.country || !addressObj.zipcode) {
+      return res.status(400).json({ success: false, message: "Incomplete address." });
+    }
+
+    const products = Array.isArray(body.products) ? body.products : [];
+    if (!products.length) {
       return res.status(400).json({ success: false, message: "No products in order." });
     }
 
-    // Normalize and validate each line
+    // ---- Normalize each line (price, color, ids) ----
     const normalizedLines = [];
     for (const raw of products) {
-      const productId = raw.productId?._id || raw.productId;
-      const quantity = Number(raw.quantity || 0);
+      const productId = raw?.productId?._id || raw?.productId;
+      const quantity = Number(raw?.quantity || 0);
 
       if (!mongoose.isValidObjectId(productId)) {
         return res.status(400).json({ success: false, message: "Invalid productId." });
@@ -87,67 +94,69 @@ const createOrder = async (req, res) => {
         return res.status(400).json({ success: false, message: "Quantity must be > 0." });
       }
 
-      // Determine unit price: prefer client-sent price; if absent, read from Product.newPrice
-      let unitPrice = Number(raw.price);
-      if (!(unitPrice > 0)) {
-        const p = await Product.findById(productId).select("newPrice");
-        if (!p) {
-          return res.status(400).json({ success: false, message: "Product not found." });
-        }
-        unitPrice = Number(p.newPrice || 0);
+      // Fetch price + cover image once (also used for color fallback)
+      const p = await Product.findById(productId).select("newPrice coverImage colors");
+      if (!p) {
+        return res.status(400).json({ success: false, message: "Product not found." });
       }
+      const unitPrice = Number(p.newPrice || 0);
 
-      // Normalize color info (optional)
-      const color =
-        raw.color
-          ? {
-              _id: raw.color._id || raw.color.colorId || undefined,
-              colorName: raw.color.colorName || undefined, // can be multilingual or string
-              image: raw.color.image || undefined,
-            }
-          : raw.colorId || raw.colorImage || raw.colorName
-          ? {
-              _id: raw.colorId,
-              colorName: raw.colorName,
-              image: raw.colorImage,
-            }
-          : undefined;
+      // Build a guaranteed-valid color object
+      let normalizedColor;
+      if (raw.color) {
+        const cn = raw.color.colorName;
+        const colorName =
+          typeof cn === "object"
+            ? cn
+            : {
+                en: cn || "Original",
+                fr: cn || "Original",
+                ar: cn || "أصلي",
+              };
+
+        normalizedColor = {
+          _id: raw.color._id || raw.color.colorId, // optional
+          colorName,
+          image: raw.color.image || p.coverImage || "/assets/default-image.png",
+        };
+      } else {
+        // Fallback if client didn't send color
+        normalizedColor = {
+          colorName: { en: "Original", fr: "Original", ar: "أصلي" },
+          image: p.coverImage || "/assets/default-image.png",
+        };
+      }
 
       normalizedLines.push({
         productId,
         quantity,
-        price: Number(unitPrice.toFixed(2)),
-        ...(color ? { color } : {}),
+        price: Number(unitPrice.toFixed(2)), // keep historical unit price
+        color: normalizedColor,              // ALWAYS present (matches schema)
       });
     }
 
-    // Recompute total server-side
+    // ---- Compute total server-side ----
     const totalPrice = normalizedLines.reduce(
       (sum, l) => sum + Number(l.price || 0) * Number(l.quantity || 0),
       0
     );
 
-    // Create order
+    // ---- Create order ----
     const order = await Order.create({
       name,
       email,
       phone,
-      address,
-      city,
-      country,
-      state,
-      zipcode,
-      notes,
+      address: addressObj,
       products: normalizedLines,
       totalPrice: Number(totalPrice.toFixed(2)),
       status: "pending",
     });
 
-    // OPTIONAL: decrement stock per color (best-effort; doesn't fail the order)
+    // ---- Best-effort stock decrement per color (does not fail order) ----
     for (const line of normalizedLines) {
       try {
         const prod = await Product.findById(line.productId).select("colors stockQuantity");
-        if (!prod) continue;
+        if (!prod || !Array.isArray(prod.colors)) continue;
 
         let idx = -1;
         if (line.color) {
@@ -170,7 +179,6 @@ const createOrder = async (req, res) => {
         if (idx > -1) {
           const current = Number(prod.colors[idx].stock || 0);
           prod.colors[idx].stock = Math.max(0, current - Number(line.quantity || 0));
-          // Recompute global stock as the sum of per-color stock
           prod.stockQuantity = prod.colors.reduce((s, c) => s + Number(c.stock || 0), 0);
           await prod.save();
         }
@@ -185,6 +193,7 @@ const createOrder = async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to create order" });
   }
 };
+
 
 
 // GET /api/orders/email/:email
