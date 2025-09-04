@@ -23,7 +23,6 @@ const defaultAllowed = [
   "https://wahret-zmen-app-frontend-flame.vercel.app",
 ];
 
-// Optional: allow additional origins via env FRONTEND_URLS="https://a.com,https://b.com"
 const envAllowed = (process.env.FRONTEND_URLS || "")
   .split(",")
   .map((s) => s.trim())
@@ -31,23 +30,21 @@ const envAllowed = (process.env.FRONTEND_URLS || "")
 
 const allowedOrigins = new Set([...defaultAllowed, ...envAllowed]);
 
-// Wildcard for any Vercel preview/prod subdomain
 const vercelWildcard = /\.vercel\.app$/i;
 
-// Check if origin is allowed
 const isOriginAllowed = (origin) => {
-  if (!origin) return true;             // No Origin header (Postman/cURL)
+  if (!origin) return true; // No Origin header (Postman/cURL)
   if (allowedOrigins.has(origin)) return true;
   if (vercelWildcard.test(origin)) return true;
   return false;
 };
 
-// Final CORS options (with preflight handling)
 const corsOptions = {
   origin: (origin, cb) => {
-    if (isOriginAllowed(origin)) cb(null, true);
-    else {
-      console.error(`❌ CORS blocked origin: ${origin}`);
+    if (isOriginAllowed(origin)) {
+      cb(null, true);
+    } else {
+      console.error(`🚫 [CORS] Blocked origin: ${origin}`);
       cb(new Error("Not allowed by CORS"));
     }
   },
@@ -56,27 +53,24 @@ const corsOptions = {
   allowedHeaders: "Content-Type,Authorization",
 };
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // Handle all preflights
+app.options("*", cors(corsOptions));
 
 /* =============================================================================
-   🧱 BODY PARSERS / STATIC
+   📦 BODY PARSERS / STATIC
 ============================================================================= */
-// Large JSON/form payloads (e.g., image uploads)
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Serve uploaded assets
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* =============================================================================
-   🚀 OPTIONAL PRELOADS
-   - Preload heavy libs once at startup (if present)
+   ⚡ OPTIONAL PRELOADS
 ============================================================================= */
 try {
   const { preload } = require("./translators/xenova");
   preload().catch(console.error);
 } catch (e) {
-  // Module is optional; ignore if not installed
+  // Ignore if xenova is not installed
 }
 
 /* =============================================================================
@@ -96,10 +90,10 @@ app.use("/api/contact", require("./src/contact-form/contact-form.route"));
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.DB_URL);
-    console.log("✅ MongoDB connected successfully");
+    console.log("🟢 [MongoDB] Connected successfully ✅");
   } catch (error) {
-    console.error("❌ MongoDB connection error:", error?.message || error);
-    setTimeout(connectDB, 5000); // Retry on failure
+    console.error("🔴 [MongoDB] Connection error ❌:", error?.message || error);
+    setTimeout(connectDB, 5000);
   }
 };
 connectDB();
@@ -119,5 +113,5 @@ app.get("/", (req, res) => {
    ▶️ START SERVER
 ============================================================================= */
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`💻 [Server] Running on port ${port}`);
 });

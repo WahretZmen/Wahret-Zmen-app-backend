@@ -1,33 +1,40 @@
-const express = require('express');
-const { 
-    postAProduct, 
-    getAllProducts, 
-    getSingleProduct, 
-    updateProduct, 
-    deleteAProduct,
-    updateProductPriceByPercentage
-} = require('./product.controller');
+// src/products/product.route.js
+const express = require("express");
+const {
+  postAProduct,
+  getAllProducts,
+  getSingleProduct,
+  updateProduct,
+  deleteAProduct,
+  updateProductPriceByPercentage,
+} = require("./product.controller");
 
-const verifyAdminToken = require('../middleware/verifyAdminToken');
+const verifyAdminToken = require("../middleware/verifyAdminToken");
 
 const router = express.Router();
 
-// ✅ POST - Create a product
+/* =============================================================================
+   🛒 Product Routes
+   - Create / Read / Update / Delete
+   - Admin-only routes protected with verifyAdminToken
+============================================================================= */
+
+// ✅ CREATE a new product
 router.post("/create-product", verifyAdminToken, postAProduct);
 
-// ✅ GET - All products
+// ✅ READ all products
 router.get("/", getAllProducts);
 
-// ✅ GET - Single product by ID
+// ✅ READ a single product by ID
 router.get("/:id", getSingleProduct);
 
-// ✅ PUT - Update a product by ID
+// ✅ UPDATE a product by ID
 router.put("/edit/:id", verifyAdminToken, updateProduct);
 
-// ✅ DELETE - Delete a product by ID
+// ✅ DELETE a product by ID
 router.delete("/:id", verifyAdminToken, deleteAProduct);
 
-// ✅ PUT - Update product price based on percentage
+// ✅ UPDATE product price by percentage (utility)
 router.put("/update-price/:id", verifyAdminToken, updateProductPriceByPercentage);
 
 module.exports = router;

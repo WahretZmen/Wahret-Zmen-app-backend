@@ -1,12 +1,16 @@
+// src/products/product.controller.js
 const Product = require("./product.model");
 // keep translate-google as a last-resort fallback (optional)
 const translateGoogle = require("translate-google");
 
-
 const { translateXenova, arFix } = require("../translators/xenova.js");
 const { GLOSSARY_FR_AR, protectTerms } = require("../translators/glossary.js");
 
-// ---------- Smart FR → AR title formatter (keeps order) ----------
+/* =============================================================================
+   🎨 Smart FR → AR Title Formatter (keeps order)
+   - Detects colors, pattern, and style from a French title.
+   - Composes a polished Arabic title: "الجبة التونسية [pattern] بال[colors] – [style]"
+============================================================================= */
 const FR_COLORS = {
   blanc: "الأبيض",
   bleu: "الأزرق",
@@ -122,10 +126,11 @@ async function translateTitleSmartFRtoAR(frTitle) {
   return ar.trim();
 }
 
-
-
-
-// Safe translator: never throws, always returns a string
+/* =============================================================================
+   🔤 Translation Helpers (safe, never throw)
+   - Prefer Xenova FR→AR with glossary; fallback to translate-google.
+   - Always return a string.
+============================================================================= */
 
 // Safe translator: prefer Xenova FR→AR with glossary; fall back to google; never throws
 const translateDetails = async (text, lang = "fr") => {
@@ -164,12 +169,12 @@ const translateDetails = async (text, lang = "fr") => {
   }
 };
 
-
-
-
-/***********************
- *  COLOR I18N (expanded)
- ***********************/
+/* =============================================================================
+   🎨 COLOR I18N (expanded)
+   - Map many FR/AR surface forms → single EN base key
+   - Then resolve localized FR/AR labels from COLOR_DICT_EN
+   - Falls back to MT when unknown
+============================================================================= */
 const stripKey = (s) =>
   String(s || "")
     .trim()
@@ -225,7 +230,6 @@ const COLOR_MAP_ANY_TO_EN = {
   "caramel": "caramel",
   "cognac": "cognac",
   "mahogany": "mahogany",
-  "acajou": "mahogany",
 
   // ------- Yellows / Or -------
   "yellow": "yellow",
@@ -554,8 +558,17 @@ async function translateColorNameSmart(raw) {
   };
 }
 
+/* =============================================================================
+   🧾 Controllers
+============================================================================= */
 
-// ---------- CREATE ----------
+/**
+ * POST /api/products
+ * - Validates input (title, description, category, prices, colors)
+ * - Normalizes colors → { colorName(en|fr|ar), images[], stock }
+ * - Translates title/description + color names
+ * - Computes stockQuantity
+ */
 const postAProduct = async (req, res) => {
   try {
     let {
@@ -608,17 +621,16 @@ const postAProduct = async (req, res) => {
     }
 
     // Translations
-   const translatedColors = await Promise.all(
-  normalizedIncoming.map(async (c) => {
-    const pack = await translateColorNameSmart(c.colorName);
-    return {
-      colorName: pack, // {en, fr, ar}
-      images: c.images,
-      stock: c.stock,
-    };
-  })
-);
-
+    const translatedColors = await Promise.all(
+      normalizedIncoming.map(async (c) => {
+        const pack = await translateColorNameSmart(c.colorName);
+        return {
+          colorName: pack, // {en, fr, ar}
+          images: c.images,
+          stock: c.stock,
+        };
+      })
+    );
 
     const titleFR = await translateDetails(title, "fr");
     const titleAR = await translateDetails(title, "ar");
@@ -655,7 +667,10 @@ const postAProduct = async (req, res) => {
   }
 };
 
-// ---------- READ: ALL ----------
+/**
+ * GET /api/products
+ * - Returns all products (newest first)
+ */
 const getAllProducts = async (_req, res) => {
   try {
     const products = await Product.find().sort({ createdAt: -1 });
@@ -666,7 +681,10 @@ const getAllProducts = async (_req, res) => {
   }
 };
 
-// ---------- READ: ONE ----------
+/**
+ * GET /api/products/:id
+ * - Returns single product by ID
+ */
 const getSingleProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -681,8 +699,11 @@ const getSingleProduct = async (req, res) => {
   }
 };
 
-// ---------- UPDATE ----------
-// ---------- UPDATE ----------
+/**
+ * PATCH /api/products/:id
+ * - Updates a product (validates, normalizes colors, translates if needed)
+ * - Allows manual translation overrides via `translations` in payload
+ */
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -783,8 +804,10 @@ const updateProduct = async (req, res) => {
   }
 };
 
-
-// ---------- DELETE ----------
+/**
+ * DELETE /api/products/:id
+ * - Deletes a product by ID
+ */
 const deleteAProduct = async (req, res) => {
   try {
     const { id } = req.params;
@@ -803,7 +826,11 @@ const deleteAProduct = async (req, res) => {
   }
 };
 
-// ---------- Update price by percentage (utility) ----------
+/**
+ * PATCH /api/products/:id/price
+ * - Utility: compute a final price from oldPrice and a discount percentage
+ *   (does not persist unless you decide to save the result)
+ */
 const updateProductPriceByPercentage = async (req, res) => {
   const { id } = req.params;
   const { percentage } = req.body;
