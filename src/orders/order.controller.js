@@ -5,7 +5,9 @@ const nodemailer = require("nodemailer");
 const Order = require("./order.model");
 const Product = require("../products/product.model");
 
-// -------------------- Helpers --------------------
+/* ============================================================================
+   Helpers
+============================================================================ */
 
 /** Recompute total on an order document in-memory */
 function recomputeTotal(orderDoc) {
@@ -17,7 +19,12 @@ function recomputeTotal(orderDoc) {
   orderDoc.totalPrice = Number(total.toFixed(2));
 }
 
-/** Find a line index by product and (optionally) color identity (currently unused) */
+/**
+ * Find a line index by product and (optionally) color identity (currently unused)
+ * Tries to match by:
+ * 1) productId
+ * 2) color _id OR colorName (en/fr/ar) OR color image
+ */
 function findLineIndex(orderDoc, { productId, colorId, colorName, colorImage }) {
   if (!orderDoc?.products?.length) return -1;
 
@@ -48,9 +55,18 @@ function findLineIndex(orderDoc, { productId, colorId, colorName, colorImage }) 
   });
 }
 
-// -------------------- Controllers --------------------
+/* ============================================================================
+   Controllers
+============================================================================ */
 
-// POST /api/orders
+/**
+ * POST /api/orders
+ * - Validates payload (name/email/phone/address/products)
+ * - Normalizes product lines (unit price, color object, quantity)
+ * - Computes total server-side
+ * - Creates order (status = 'pending')
+ * - Best-effort stock decrement per color (non-fatal on failure)
+ */
 const createOrder = async (req, res) => {
   try {
     const body = req.body || {};
@@ -72,7 +88,13 @@ const createOrder = async (req, res) => {
     if (!name || !email || !phone) {
       return res.status(400).json({ success: false, message: "Missing name, email, or phone." });
     }
-    if (!addressObj.street || !addressObj.city || !addressObj.state || !addressObj.country || !addressObj.zipcode) {
+    if (
+      !addressObj.street ||
+      !addressObj.city ||
+      !addressObj.state ||
+      !addressObj.country ||
+      !addressObj.zipcode
+    ) {
       return res.status(400).json({ success: false, message: "Incomplete address." });
     }
 
@@ -169,7 +191,8 @@ const createOrder = async (req, res) => {
                   line.color.colorName.fr ||
                   line.color.colorName.ar ||
                   line.color.colorName) + "";
-              const have = (c.colorName?.en || c.colorName?.fr || c.colorName?.ar || c.colorName) + "";
+              const have =
+                (c.colorName?.en || c.colorName?.fr || c.colorName?.ar || c.colorName) + "";
               return want.toLowerCase() === have.toLowerCase();
             }
             return false;
@@ -194,16 +217,17 @@ const createOrder = async (req, res) => {
   }
 };
 
-
-
-// GET /api/orders/email/:email
+/**
+ * GET /api/orders/email/:email
+ * - Returns all orders for a given email (oldest first)
+ * - Populates essential product fields
+ */
 const getOrderByEmail = async (req, res) => {
   try {
     const { email } = req.params;
-    
-    // Oldest first so #1 is the earliest order
+
     const orders = await Order.find({ email })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: 1 }) // oldest first
       .populate("products.productId", "title colors coverImage");
 
     return res.status(200).json(orders || []);
@@ -213,8 +237,11 @@ const getOrderByEmail = async (req, res) => {
   }
 };
 
-
-// GET /api/orders/:id
+/**
+ * GET /api/orders/:id
+ * - Fetch a single order by ID
+ * - Populates essential product fields
+ */
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -234,7 +261,11 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// GET /api/orders (admin)
+/**
+ * GET /api/orders (admin)
+ * - Returns all orders
+ * - Populates products + injects coverImage convenience prop per line
+ */
 const getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
@@ -256,7 +287,10 @@ const getAllOrders = async (req, res) => {
   }
 };
 
-// PUT /api/orders/:id
+/**
+ * PUT /api/orders/:id
+ * - Update flags (isPaid, isDelivered) and productProgress
+ */
 const updateOrder = async (req, res) => {
   const { id } = req.params;
   const { isPaid, isDelivered, productProgress } = req.body;
@@ -283,7 +317,12 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// POST /api/orders/remove-line
+/**
+ * POST /api/orders/remove-line
+ * - Remove or decrement a product line from an order
+ * - Restores stock accordingly
+ * - Recomputes order total using current Product.newPrice
+ */
 const removeProductFromOrder = async (req, res) => {
   const { orderId, productKey, quantityToRemove } = req.body;
 
@@ -390,7 +429,11 @@ const removeProductFromOrder = async (req, res) => {
   }
 };
 
-// DELETE /api/orders/:id
+/**
+ * DELETE /api/orders/:id
+ * - Deletes an order
+ * - Restores stock for each item (best-effort; non-fatal on issues)
+ */
 const deleteOrder = async (req, res) => {
   try {
     const { id } = req.params;
@@ -448,7 +491,11 @@ const deleteOrder = async (req, res) => {
   }
 };
 
-// POST /api/orders/notify
+/**
+ * POST /api/orders/notify
+ * - Sends bilingual (FR + AR) progress email to a customer for a specific product line
+ * - Accepts: orderId, email, productKey("productId|colorName"), progress, articleIndex?
+ */
 const sendOrderNotification = async (req, res) => {
   try {
     const { orderId, email, productKey, progress, articleIndex } = req.body;
@@ -493,7 +540,7 @@ const sendOrderNotification = async (req, res) => {
         ? `Commande ${shortOrderId}${articleText} – Votre création est prête !`
         : `Commande ${shortOrderId}${articleText} – Suivi de la confection artisanale (${progress}%)`;
 
-    // ✅ FIX: Close the template string with a backtick, not a stray quote
+    // Bilingual HTML body (FR + AR)
     const htmlMessage = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6;">
         <p><strong>Cher ${customerName}</strong>,</p>
@@ -520,6 +567,7 @@ const sendOrderNotification = async (req, res) => {
       </div>
     `;
 
+    // Transporter (Gmail via env)
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -528,14 +576,12 @@ const sendOrderNotification = async (req, res) => {
       },
     });
 
-    const mailOptions = {
+    await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
       subject,
       html: htmlMessage,
-    };
-
-    await transporter.sendMail(mailOptions);
+    });
 
     res.status(200).json({ message: "Notification sent successfully in French and Arabic." });
   } catch (error) {
@@ -544,8 +590,9 @@ const sendOrderNotification = async (req, res) => {
   }
 };
 
-// -------------------- Exports --------------------
-
+/* ============================================================================
+   Exports
+============================================================================ */
 module.exports = {
   createOrder,
   getAllOrders,
