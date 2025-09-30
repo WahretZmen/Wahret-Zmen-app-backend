@@ -5,12 +5,11 @@ const Admin = require("./admin.model");
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET_KEY;
 
-// Escape regex meta chars
 function escapeRegex(s = "") {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// POST /api/auth/admin  (plain text login)
+// POST /api/auth/admin (plain text)
 router.post("/", async (req, res) => {
   try {
     let { username, password } = req.body || {};
@@ -21,10 +20,10 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "Username and password required" });
     }
 
-    // Allow login with username OR email (case-insensitive), require role=admin and plain password match
+    // Case-insensitive username OR email, role: admin, plain password match
     const query = {
       role: "admin",
-      password, // plain text comparison by your request
+      password, // plain text, as requested
       $or: [
         { username: { $regex: `^${escapeRegex(username)}$`, $options: "i" } },
         { email:    { $regex: `^${escapeRegex(username)}$`, $options: "i" } },
@@ -34,11 +33,11 @@ router.post("/", async (req, res) => {
     const admin = await Admin.findOne(query).lean();
 
     if (!admin) {
-      // Minimal, safe debug to help you see why it failed
-      console.warn("Admin login failed (no match):", {
+      // Minimal debug (safe): helps confirm which DB/collection is used
+      console.warn("Auth/admin no match", {
         tried: username,
-        // DO NOT log password value here
         collection: "users",
+        db: process.env.DB_URL?.split("@")?.pop(), // tail of uri (debug hint)
       });
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -51,12 +50,7 @@ router.post("/", async (req, res) => {
 
     return res.json({
       token,
-      admin: {
-        id: admin._id,
-        username: admin.username,
-        email: admin.email,
-        role: admin.role,
-      },
+      admin: { id: admin._id, username: admin.username, email: admin.email, role: admin.role },
     });
   } catch (err) {
     console.error("❌ Admin login error:", err);
