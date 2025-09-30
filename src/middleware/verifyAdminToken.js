@@ -1,4 +1,4 @@
-// src/middleware/verifyAdminToken.js
+/// src/middleware/verifyAdminToken.js
 const jwt = require("jsonwebtoken");
 const User = require("../users/user.model"); // Adjust path if needed
 
