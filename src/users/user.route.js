@@ -1,134 +1,80 @@
-// routes/user.route.js
+/// routes/user.route.js
 const express = require("express");
-const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const User = require("./user.model");
 
 const router = express.Router();
 
-// --- Config & Guards ---------------------------------------------------------
-const JWT_SECRET = process.env.JWT_SECRET_KEY;
-if (!JWT_SECRET) {
-  // Crash early in dev; in prod you may prefer a loud log + 500 responses.
-  console.warn("⚠️  JWT_SECRET_KEY is not set. Set it in your environment variables.");
-}
-
-// Optional cookie auth toggles (kept flexible for your frontend)
-const USE_COOKIE_AUTH = process.env.USE_COOKIE_AUTH === "true";
-const COOKIE_NAME = process.env.JWT_COOKIE_NAME || "auth_token";
-const COOKIE_SECURE = process.env.COOKIE_SECURE !== "false"; // default true on prod
-const COOKIE_SAME_SITE = process.env.COOKIE_SAMESITE || "Lax";
+/**
+ * 🌱 USER ROUTES (no admin here)
+ * ----------------------------------------------------------
+ * This router is mounted at: /api/auth
+ * Use it for normal user operations (login, register, etc.).
+ * Admin login is handled separately in:
+ *   - /api/auth/admin  (plain-text login, src/admin/admin.route.js)
+ *   - /api/admin/*     (stats protected by verifyAdminToken)
+ */
 
 // --- Helpers -----------------------------------------------------------------
 function normalizeStr(s) {
   return typeof s === "string" ? s.trim() : "";
 }
 
-function sendAuthToken(res, token) {
-  // Always return token in JSON (backwards compatible with your frontend)
-  // Optionally also set httpOnly cookie if USE_COOKIE_AUTH=true
-  if (USE_COOKIE_AUTH) {
-    res.cookie(COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: COOKIE_SECURE,
-      sameSite: COOKIE_SAME_SITE,
-      // 30 days
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: "/",
-    });
-  }
-  return res.json({ token });
-}
-
-// Minimal admin gate using the same JWT
-function requireAdmin(req, res, next) {
-  try {
-    const header = req.headers.authorization || "";
-    const [, raw] = header.split(" "); // "Bearer <token>"
-    const token = raw || (USE_COOKIE_AUTH ? req.cookies?.[COOKIE_NAME] : null);
-
-    if (!token) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-
-    const payload = jwt.verify(token, JWT_SECRET);
-    if (!payload?.role || String(payload.role).toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Forbidden" });
-    }
-
-    req.user = payload;
-    next();
-  } catch (err) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-}
-
-// --- Routes ------------------------------------------------------------------
-
-/* =============================================================================
-   🔑 ADMIN LOGIN
-   Body: { username, password }
-============================================================================= */
-router.post("/admin", async (req, res) => {
+// Example: user registration (bcrypt)
+router.post("/register", async (req, res) => {
   try {
     const username = normalizeStr(req.body?.username);
+    const email = normalizeStr(req.body?.email);
     const password = normalizeStr(req.body?.password);
 
-    if (!username || !password) {
-      return res.status(400).json({ message: "Username and password are required." });
-    }
-    if (!JWT_SECRET) {
-      return res.status(500).json({ message: "Server misconfiguration." });
+    if (!username || !email || !password) {
+      return res.status(400).json({ message: "All fields are required." });
     }
 
-    // If your schema has password select:false, add .select('+password')
-    const adminUser = await User.findOne({ username /* case-sensitive by default */ }).select(
-      "+password"
-    );
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(409).json({ message: "Email already registered." });
+    }
 
-    // Avoid leaking which field failed
-    if (!adminUser) {
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ username, email, password: hashed, role: "user" });
+    await user.save();
+
+    res.status(201).json({ message: "User registered successfully" });
+  } catch (err) {
+    console.error("❌ User registration error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Example: user login (bcrypt)
+router.post("/login", async (req, res) => {
+  try {
+    const email = normalizeStr(req.body?.email);
+    const password = normalizeStr(req.body?.password);
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password required." });
+    }
+
+    const user = await User.findOne({ email }).select("+password");
+    if (!user) {
       return res.status(401).json({ message: "Invalid credentials." });
     }
 
-    const isAdmin = String(adminUser.role || "").toLowerCase() === "admin";
-    if (!isAdmin) {
-      return res.status(403).json({ message: "Forbidden." });
-    }
-
-    const ok = await bcrypt.compare(password, adminUser.password || "");
+    const ok = await bcrypt.compare(password, user.password || "");
     if (!ok) {
       return res.status(401).json({ message: "Invalid credentials." });
     }
 
-    const token = jwt.sign(
-      { id: String(adminUser._id), username: adminUser.username, role: adminUser.role },
-      JWT_SECRET,
-      { expiresIn: "30d" }
-    );
-
-    return res.status(200).json({
-      message: "Authentication successful",
-      user: { username: adminUser.username, role: adminUser.role },
-      ...(USE_COOKIE_AUTH ? {} : { token }), // if cookie mode, omit token field (still returned by sendAuthToken below if you use it)
+    // You can return a token here if needed, or just success.
+    res.json({
+      message: "Login successful",
+      user: { id: user._id, username: user.username, email: user.email },
     });
-  } catch (error) {
-    console.error("❌ Admin login error:", error);
-    return res.status(500).json({ message: "Server error. Please try again later." });
-  }
-});
-
-/* =============================================================================
-   👥 GET TOTAL USERS (MongoDB only)
-   - Protected: admin only
-============================================================================= */
-router.get("/admin/users/count", requireAdmin, async (_req, res) => {
-  try {
-    const mongoUsersCount = await User.countDocuments();
-    return res.status(200).json({ totalUsers: mongoUsersCount });
-  } catch (error) {
-    console.error("❌ Error counting users:", error);
-    return res.status(500).json({ message: "Server error" });
+  } catch (err) {
+    console.error("❌ User login error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 

@@ -1,10 +1,12 @@
-// index.js
+/// index.js
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const path = require("path");
+
+const verifyAdminToken = require("./src/middleware/verifyAdminToken");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -75,11 +77,25 @@ try {
 
 /* =============================================================================
    🛣️ API ROUTES
+   - Users auth (Firebase/regular users) stays under /api/auth
+   - Admin auth (PLAIN TEXT in Mongo) is mounted at /api/auth/admin
+   - Admin stats are protected by verifyAdminToken
 ============================================================================= */
 app.use("/api/products", require("./src/products/product.route"));
 app.use("/api/orders", require("./src/orders/order.route"));
+
+/** Users (keep your existing user routes) */
 app.use("/api/auth", require("./src/users/user.route"));
-app.use("/api/admin", require("./src/stats/admin.stats"));
+
+/** Admin (plain-text login) — expects route.post("/") in ./src/admin/admin.route.js
+ *  Final endpoint: POST /api/auth/admin
+ */
+app.use("/api/auth/admin", require("./src/admin/admin.route"));
+
+/** Admin stats (protected) */
+app.use("/api/admin", verifyAdminToken, require("./src/stats/admin.stats"));
+
+/** Uploads + contact */
 app.use("/api", require("./src/routes/uploadRoutes"));
 app.use("/api/contact", require("./src/contact-form/contact-form.route"));
 
