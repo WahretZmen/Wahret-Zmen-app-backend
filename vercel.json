@@ -1,0 +1,57 @@
+
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "index.js",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "src/**"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/robots\\.txt",
+      "dest": "index.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Robots-Tag": "index, follow"
+      }
+    },
+    {
+      "src": "/sitemap\\.xml",
+      "dest": "index.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+        "Content-Type": "application/xml; charset=utf-8",
+        "X-Robots-Tag": "index, follow"
+      }
+    },
+    {
+      "src": "/sitemap-index\\.xml",
+      "dest": "index.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+        "Content-Type": "application/xml; charset=utf-8",
+        "X-Robots-Tag": "index, follow"
+      }
+    },
+    {
+      "src": "/sitemaps/(.*)",
+      "dest": "index.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+        "Content-Type": "application/xml; charset=utf-8",
+        "X-Robots-Tag": "index, follow"
+      }
+    },
+    {
+      "src": "/(.*)",
+      "dest": "index.js"
+    }
+  ]
+}
