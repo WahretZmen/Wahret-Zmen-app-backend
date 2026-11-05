@@ -1,16 +1,18 @@
 "use strict";
 const express = require("express");
-const router = express.Router();
 const multer = require("multer");
 const { uploadImage, upload } = require("../controllers/uploadController");
+const router = express.Router();
 
-// Keep the existing mount in index.js: app.use("/api", uploadRoutes).
+// Preserve existing index.js mount: app.use('/api', uploadRoutes).
+// IMPORTANT: Protect this endpoint with your existing admin JWT middleware at the mount.
 router.post("/upload", (req, res, next) => {
   upload.single("image")(req, res, (error) => {
     if (!error) return next();
-    console.error("[Image upload] Multer failure:", error);
     const tooLarge = error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE";
+    console.warn("[Image upload] Rejected file:", error.message);
     return res.status(tooLarge ? 413 : 400).json({
+      success: false, code: tooLarge ? "IMAGE_TOO_LARGE" : "IMAGE_INVALID",
       message: tooLarge ? "Image trop volumineuse (maximum 15 Mo)." : "Image non acceptée.",
       error: String(error.message || error),
     });
