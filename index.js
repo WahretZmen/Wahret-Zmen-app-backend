@@ -10,6 +10,7 @@
    ADMIN AUTHENTICATION
    EMAIL REMINDERS
    CRON WORKER
+   META WHATSAPP WEBHOOK VERIFICATION
 ============================================================ */
 
 require("dotenv").config();
@@ -19,6 +20,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const cookieParser = require("cookie-parser");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const app = express();
 
@@ -371,6 +373,7 @@ function optionalRouter(loader, name) {
   } catch (error) {
     // A missing optional module may be skipped.
     // A broken module must not be silently ignored.
+
     if (
       error.code === "MODULE_NOT_FOUND" &&
       error.message.includes(name)
@@ -402,7 +405,68 @@ const adminReminderWorker = optionalRouter(
 );
 
 /* ============================================================
-   9. HEALTH ENDPOINTS
+   9. META WHATSAPP CLOUD API WEBHOOK
+
+   GET /api/whatsapp/webhook
+
+   Used by Meta to verify the callback URL.
+
+   No admin JWT required.
+   No MongoDB connection required.
+============================================================ */
+
+app.get("/api/whatsapp/webhook", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  const configuredToken =
+    process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+
+  if (
+    !configuredToken ||
+    typeof configuredToken !== "string"
+  ) {
+    console.error(
+      "[WhatsApp Webhook] Missing verification token"
+    );
+
+    return res.sendStatus(503);
+  }
+
+  if (
+    mode !== "subscribe" ||
+    typeof token !== "string" ||
+    typeof challenge !== "string"
+  ) {
+    return res.sendStatus(403);
+  }
+
+  const received = Buffer.from(token, "utf8");
+  const expected = Buffer.from(
+    configuredToken,
+    "utf8"
+  );
+
+  if (
+    received.length !== expected.length ||
+    !crypto.timingSafeEqual(received, expected)
+  ) {
+    return res.sendStatus(403);
+  }
+
+  console.info("[WhatsApp Webhook] Verified");
+
+  return res
+    .status(200)
+    .type("text/plain")
+    .send(challenge);
+});
+
+/* ============================================================
+   10. HEALTH ENDPOINTS
 ============================================================ */
 
 app.get("/api/health/live", (req, res) => {
@@ -435,7 +499,7 @@ app.get("/api/health", async (req, res) => {
 });
 
 /* ============================================================
-   10. ADMIN AUTHENTICATION
+   11. ADMIN AUTHENTICATION
 ============================================================ */
 
 app.use(
@@ -445,7 +509,7 @@ app.use(
 );
 
 /* ============================================================
-   11. PRODUCTS
+   12. PRODUCTS
 ============================================================ */
 
 app.use(
@@ -455,7 +519,7 @@ app.use(
 );
 
 /* ============================================================
-   12. ORDERS
+   13. ORDERS
 ============================================================ */
 
 app.use(
@@ -465,7 +529,7 @@ app.use(
 );
 
 /* ============================================================
-   13. ADMIN PROGRESS NOTIFICATIONS
+   14. ADMIN PROGRESS NOTIFICATIONS
 ============================================================ */
 
 app.use(
@@ -476,7 +540,7 @@ app.use(
 );
 
 /* ============================================================
-   14. ADMIN COMMUNICATION SETTINGS
+   15. ADMIN COMMUNICATION SETTINGS
 ============================================================ */
 
 app.use(
@@ -487,7 +551,7 @@ app.use(
 );
 
 /* ============================================================
-   15. PRIVATE AM HSSIN ADMIN AI
+   16. PRIVATE AM HSSIN ADMIN AI
 ============================================================ */
 
 if (amHssinAdminRoute) {
@@ -500,7 +564,7 @@ if (amHssinAdminRoute) {
 }
 
 /* ============================================================
-   16. ADMIN REMINDERS
+   17. ADMIN REMINDERS
 ============================================================ */
 
 if (adminRemindersRoute) {
@@ -513,7 +577,7 @@ if (adminRemindersRoute) {
 }
 
 /* ============================================================
-   17. CRON REMINDER WORKER
+   18. CRON REMINDER WORKER
 
    The worker performs its own secret validation.
    Do not protect this route with admin JWT.
@@ -528,7 +592,7 @@ if (adminReminderWorker) {
 }
 
 /* ============================================================
-   18. ADMIN DASHBOARD
+   19. ADMIN DASHBOARD
 ============================================================ */
 
 app.use(
@@ -539,7 +603,7 @@ app.use(
 );
 
 /* ============================================================
-   19. UPLOADS
+   20. UPLOADS
 ============================================================ */
 
 app.use("/api", uploadRoutes);
@@ -557,7 +621,7 @@ app.use(
 );
 
 /* ============================================================
-   20. BLOG
+   21. BLOG
 ============================================================ */
 
 app.use(
@@ -567,7 +631,7 @@ app.use(
 );
 
 /* ============================================================
-   21. CONTACT
+   22. CONTACT
 ============================================================ */
 
 app.use(
@@ -576,7 +640,7 @@ app.use(
 );
 
 /* ============================================================
-   22. PUBLIC AI CHECKOUT
+   23. PUBLIC AI CHECKOUT
 ============================================================ */
 
 app.use(
@@ -586,7 +650,7 @@ app.use(
 );
 
 /* ============================================================
-   23. PUBLIC AI SESSIONS
+   24. PUBLIC AI SESSIONS
 ============================================================ */
 
 app.use(
@@ -595,7 +659,7 @@ app.use(
 );
 
 /* ============================================================
-   24. PUBLIC AM HSSIN AI
+   25. PUBLIC AM HSSIN AI
 
    POST /api/ai/chat
    POST /api/ai/chat/stream
@@ -607,13 +671,13 @@ app.use(
 );
 
 /* ============================================================
-   25. SEO
+   26. SEO
 ============================================================ */
 
 app.use("/", seoRoutes);
 
 /* ============================================================
-   26. ROOT
+   27. ROOT
 ============================================================ */
 
 app.get("/", (req, res) => {
@@ -625,7 +689,7 @@ app.get("/", (req, res) => {
 });
 
 /* ============================================================
-   27. 404 HANDLER
+   28. 404 HANDLER
 ============================================================ */
 
 app.use((req, res) => {
@@ -639,7 +703,7 @@ app.use((req, res) => {
 });
 
 /* ============================================================
-   28. GLOBAL ERROR HANDLER
+   29. GLOBAL ERROR HANDLER
 ============================================================ */
 
 app.use((error, req, res, next) => {
@@ -676,7 +740,7 @@ app.use((error, req, res, next) => {
 });
 
 /* ============================================================
-   29. START SERVER
+   30. START SERVER
 ============================================================ */
 
 let server = null;
@@ -718,6 +782,10 @@ function startServer() {
     );
 
     console.log(
+      "WhatsApp Webhook: GET /api/whatsapp/webhook"
+    );
+
+    console.log(
       "======================================"
     );
   });
@@ -740,7 +808,7 @@ function startServer() {
 }
 
 /* ============================================================
-   30. GRACEFUL SHUTDOWN
+   31. GRACEFUL SHUTDOWN
 ============================================================ */
 
 let shuttingDown = false;
@@ -775,7 +843,7 @@ async function shutdown(signal) {
 }
 
 /* ============================================================
-   31. LOCAL SERVER START
+   32. LOCAL SERVER START
 ============================================================ */
 
 if (!IS_VERCEL && require.main === module) {
@@ -791,7 +859,7 @@ if (!IS_VERCEL && require.main === module) {
 }
 
 /* ============================================================
-   32. VERCEL EXPORT
+   33. VERCEL EXPORT
 ============================================================ */
 
 module.exports = app;
