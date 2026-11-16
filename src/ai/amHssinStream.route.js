@@ -19,7 +19,32 @@ function classify(status, detail) {
   if (status === 503 || status === 504) return { status: 503, code: "AI_UNAVAILABLE", message: "AI service is starting or temporarily unavailable." };
   return { status: 502, code: "AI_UPSTREAM_ERROR", message: "AI service request failed." };
 }
+// Optional early wake-up for the Public chat widget. Never calls OpenAI, tools or sessions.
+// GET is intentionally read-only; this cannot guarantee instant replies on a sleeping host.
+router.get("/warmup", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55000);
+  try {
+    const upstream = await fetch(`${baseUrl()}/health`, {
+      method: "GET", signal: controller.signal,
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+    });
+    if (!upstream.ok) return failure(res, 503, "AI_WARMUP_UNAVAILABLE", "AI service is starting.");
+    const payload = await upstream.json().catch(() => ({}));
+    if (payload?.status !== "healthy") return failure(res, 503, "AI_WARMUP_UNAVAILABLE", "AI service is not ready.");
+    console.info("[AmHssin warmup]", { duration_ms: Date.now() - started, uptime_seconds: payload.process_uptime_seconds ?? null });
+    return res.status(200).json({ ready: true, duration_ms: Date.now() - started });
+  } catch (error) {
+    console.warn("[AmHssin warmup]", { duration_ms: Date.now() - started, error: error?.name || "upstream_unavailable" });
+    return failure(res, 503, "AI_WARMUP_UNAVAILABLE", "AI service is starting.");
+  } finally { clearTimeout(timer); }
+});
+
 router.post("/chat/stream", async (req, res) => {
+  const requestStarted = Date.now();
   res.setHeader("Cache-Control", "no-store");
   const message = req.body?.message;
   const sessionId = req.body?.session_id;
@@ -41,6 +66,7 @@ router.post("/chat/stream", async (req, res) => {
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-Internal-AI-Key": key, "X-Request-ID": crypto.randomUUID() },
       body: JSON.stringify({ message: message.trim(), ...(sessionId ? { session_id: sessionId } : {}) }),
     });
+    console.info("[AmHssin stream upstream]", { headers_ms: Date.now() - requestStarted, status: upstream.status });
     if (!upstream.ok) {
       const raw = (await upstream.text().catch(() => "")).slice(0, 1500);
       let detail = "";
@@ -62,6 +88,7 @@ router.post("/chat/stream", async (req, res) => {
       }
     }
     if (!res.writableEnded && !res.destroyed) res.end();
+    console.info("[AmHssin stream completed]", { total_ms: Date.now() - requestStarted });
   } catch (error) {
     if (clientDisconnected) return;
     const timedOut = controller.signal.aborted;
