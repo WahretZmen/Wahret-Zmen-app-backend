@@ -1,5 +1,5 @@
 "use strict";
-// Mount at /api/ai. Keep public routes independent of Admin authentication.
+// Mount at /api/ai. Keep public routes independent of Admin authentication. //
 const express = require("express");
 const crypto = require("node:crypto");
 const router = express.Router();
